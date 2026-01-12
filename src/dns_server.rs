@@ -1,4 +1,5 @@
 use std::{collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket}, sync::Arc, time::Instant};
+use crate::config::Config;
 
 pub struct CacheRecord {
     ip_addr: IpAddr,
@@ -37,7 +38,11 @@ pub struct DnsServer {
  * Implementation of the DNS Server struct
  */
 impl DnsServer {
-    pub fn new (socket_addr: SocketAddr, default_ipv4: Ipv4Addr) -> std::io::Result<Self> {
+    pub fn new (config: Config) -> std::io::Result<Self> {
+
+        let socket_addr: SocketAddr = config.listen_addr;
+        let default_ipv4: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
+        
         let socket: UdpSocket = UdpSocket::bind(socket_addr)?;
         socket.set_nonblocking(false)?;
 
@@ -51,6 +56,13 @@ impl DnsServer {
             cache: Arc::new(DnsCache { cache: HashMap::new() })
             }
         )
+    }
+
+    pub fn run (&self) -> std::io::Result<()> {
+        // Main loop for the DNS server
+        loop {
+            // Handle incoming DNS requests here
+        }
     }
 
 }

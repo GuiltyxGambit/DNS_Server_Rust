@@ -1,42 +1,35 @@
 mod dns_server;
+mod config;
+mod config_parser;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::net::UdpSocket;
 use std::net::IpAddr;
 use std::env;
-
-use trust_dns_server::proto::rr::rdata::null;
 use dns_server::DnsServer;
+use config::Config;
 
 
+fn main() {
+    //let args: Vec<String> = env::args().collect(); // Configure this later
+    let cfg_result: Result<Config, std::io::Error> = config::Config::load_via_path("C:/Users/bwroc/Documents/Projects/DNS_Server_Rust/src/config.yaml");
+    let cfg: Config = match cfg_result {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to load config: {}", e);
+            return;
+        }
+    };
 
-//mod dns;
-//use dns::DNS_Server;
-
-
-fn main() -> std::io::Result<()> {
-    let args: Vec<String> = env::args().collect();
-
-    // Validate CLI args:
-    if args.len() == 2 {
-        eprintln!("Usage: {} <search_term> <file_path>", args[0]);
-    }
-
-    let search_term: &String = &args[1];
-
-    
-    let address: &str = "0.0.0.0:8080";
-
-    let socket: UdpSocket = UdpSocket::bind(address)?;
-
-    let ip_address = "1.1.1.1";
-    let mac_address = "AA:BB:CC:BBC";
-
-    let m = DnsServer::new(ip_address, mac_address);
+    let dns_server_result: Result<DnsServer, std::io::Error> = DnsServer::new(cfg);
+    let dns_server: DnsServer = match dns_server_result {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to create DNS server: {}", e);
+            return;
+        }
+    };
 
     //let m = DNS_Server::new("Test");
     //println!("This is a {}", m.word);
-
-    println!("Hello, world!");
-    Ok(println!("End"))
 }

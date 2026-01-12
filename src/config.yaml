@@ -1,0 +1,9 @@
+server:
+  address: 192.168.5.1
+  port: 53
+
+logging:
+
+
+upstream_dns:
+    
