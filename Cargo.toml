@@ -8,3 +8,14 @@ trust-dns-server = "0.23.2"
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
+clap = { version = "4.0", default-features = false }
+
+[workspace.lints.clippy]
+bool_to_int_with_if = "allow"
+default_trait_access = "warn"
+manual_let_else = "warn"
+or_fun_call = "warn"
+single_component_path_imports = "allow"
+unimplemented = "warn"
+upper_case_acronyms = "allow"
+use_self = "warn"

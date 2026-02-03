@@ -1,7 +1,5 @@
 mod dns_server;
 mod config;
-mod config_parser;
-
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::net::UdpSocket;
 use std::net::IpAddr;
@@ -9,19 +7,23 @@ use std::env;
 use dns_server::DnsServer;
 use config::Config;
 
-
+/// Bootstrapper
 fn main() {
-    //let args: Vec<String> = env::args().collect(); // Configure this later
-    let cfg_result: Result<Config, std::io::Error> = config::Config::load_via_path("C:/Users/bwroc/Documents/Projects/DNS_Server_Rust/src/config.yaml");
-    let cfg: Config = match cfg_result {
+    let _args: Vec<String> = env::args().collect(); // Configure this later
+
+    // TODO: If a configuration is provided by the user, use it. Otherwise use the default.
+    let config_path = "C:/Users/bwroc/Documents/Projects/DNS_Server_Rust/src/config.yaml";
+    let cnfg_result: Result<Config, std::io::Error> = config::Config::load_via_path(config_path);
+    let cnfg: Config = match cnfg_result {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to load config: {}", e);
+        Err(e) => { 
+            eprintln!("!!! FAILED TO LOAD CONFIG. ERROR MESSAGE: {}", e);
             return;
         }
     };
 
-    let dns_server_result: Result<DnsServer, std::io::Error> = DnsServer::new(cfg);
+    // Create the DNS server using load configuration BEFORE running.
+    let dns_server_result: Result<DnsServer, std::io::Error> = DnsServer::new(cnfg);
     let dns_server: DnsServer = match dns_server_result {
         Ok(s) => s,
         Err(e) => {
@@ -29,7 +31,12 @@ fn main() {
             return;
         }
     };
+    
+    // Start the DNS server
+    if let Err(e) = dns_server.run() {
+        eprintln!("Failed to start DNS server: {}", e); // If server fails to start, print this error.
+    }
+    
+    println!("DNS Server has stopped.");
 
-    //let m = DNS_Server::new("Test");
-    //println!("This is a {}", m.word);
 }
