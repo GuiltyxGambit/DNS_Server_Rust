@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket}, sync::Arc, time::Instant, vec};
+use std::{any::Any, collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket}, sync::Arc, time::Instant, vec};
 use trust_dns_server::proto::op::query;
 
 use crate::config::Config;
@@ -61,6 +61,7 @@ pub struct DnsServer {
 impl DnsServer {
     pub fn new (config: Config) -> std::io::Result<Self> {
         let socket_addr: SocketAddr = config.listen_addr;
+        println!("{}, :{}", config.listen_addr.ip(), config.listen_addr.port());
         let default_ipv4: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0); // Placeholder for default IP
         let socket: UdpSocket = UdpSocket::bind(socket_addr)?;
         socket.set_nonblocking(false)?;
@@ -181,14 +182,12 @@ impl DnsServer {
     }
 
     /// Run the DNS server
-    /// Note how this is a very low level way of doing things compared to Java. There is no buffered reader/writer abstraction.
     pub fn run (&self) -> std::io::Result<()> {
+        // 
+
         println!("DNS Server is running on {}", self.socket_addr);
-
         let mut buffer: [u8; 512] = [0u8; 512]; // DNS packets are max 512 bytes (UDP)
-
         loop {
-            // Receive data from clients
             let (size, src_addr) = match self.socket.recv_from(&mut buffer) { // writes to the buffer
                 Ok((size, src_addr)) => (size, src_addr),
                 Err(e) => {
