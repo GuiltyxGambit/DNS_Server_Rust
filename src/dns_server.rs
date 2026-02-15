@@ -59,9 +59,12 @@ pub struct DnsServer {
 
 /// Implementation block for DnsServer
 impl DnsServer {
+
+    /// TODO: I need to do something better here.
     pub fn new (config: Config) -> std::io::Result<Self> {
+
         let socket_addr: SocketAddr = config.listen_addr;
-        println!("{}, :{}", config.listen_addr.ip(), config.listen_addr.port());
+        println!(" Creating socket at {}:{} ", config.listen_addr.ip(), config.listen_addr.port());
         let default_ipv4: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0); // Placeholder for default IP
         let socket: UdpSocket = UdpSocket::bind(socket_addr)?;
         socket.set_nonblocking(false)?;
@@ -148,7 +151,7 @@ impl DnsServer {
 
     }
 
-    /// 
+    /// This function should only run when a packet has been recieved. Can use for testing?
     fn handle_request(&self, pkt: &[u8]) -> std::io::Result<Vec<u8>> {
         // Parse DNS header
         let len = pkt.len();
@@ -183,20 +186,21 @@ impl DnsServer {
 
     /// Run the DNS server
     pub fn run (&self) -> std::io::Result<()> {
-        // 
-
         println!("DNS Server is running on {}", self.socket_addr);
         let mut buffer: [u8; 512] = [0u8; 512]; // DNS packets are max 512 bytes (UDP)
-        loop {
-            let (size, src_addr) = match self.socket.recv_from(&mut buffer) { // writes to the buffer
+
+        loop { 
+            let (size, src_addr) = match self.socket.recv_from(&mut buffer) {
                 Ok((size, src_addr)) => (size, src_addr),
                 Err(e) => {
                     eprintln!("Failed to receive data: {}", e);
                     continue;
                 }
             };
+            // Add a packet data validator here??
+            println!("Packet size: {}", size);
 
-            let request_data: &[u8] = &buffer[..size]; // Slice the buffer to the actual size received
+            let request_data= &buffer[..size];
 
             // Handle the DNS request
             let response = match self.handle_request(request_data) {
@@ -208,7 +212,7 @@ impl DnsServer {
             };
 
             // Send response back to the client
-             if let Err(e) = self.socket.send_to(&response, src_addr) {
+            if let Err(e) = self.socket.send_to(&response, src_addr) {
                 eprintln!("send_to failed: {}", e);
             };
 

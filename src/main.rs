@@ -37,7 +37,7 @@ fn main() {
     
     // Start the DNS server
     if let Err(e) = dns_server.run() {
-        eprintln!("Failed to start DNS server: {}", e); // If server fails to start, print this error.
+        eprintln!("Failed to start DNS server: {}", e); // If server fails to start, print error.
     }
     
     println!("DNS Server has stopped.");

@@ -8,7 +8,7 @@ server:
   tls_port: 853
   https_port: 443
   ip_addrs: 
-    - 0.0.0.0
+    - 10.0.5.1
 
 #zones:
 #  - namespace: nintendo.net.
