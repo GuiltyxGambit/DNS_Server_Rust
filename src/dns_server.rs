@@ -1,7 +1,8 @@
-use std::{any::Any, collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket}, sync::Arc, time::Instant, vec};
+use std::{any::Any, collections::HashMap, fmt::Result, net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket}, sync::Arc, time::Instant, vec};
 use trust_dns_server::proto::op::query;
-
 use crate::config::Config;
+
+type Result<T> = core::result::Result<T, Box<dyn Error>>;
 
 /// Add later
 pub struct CacheRecord {
@@ -31,57 +32,75 @@ struct DNSHeader {
     arcount: u16,
 }
 
-/// Generic handler trait for different types of requests
-trait Handler<T> {
-    type Raw;
-    fn handle(&self, item: T);
-}
-
-/// Main DNS Server struct
 pub struct DnsServer {
-    // Network Variables
-    socket_addr: SocketAddr,
-    socket: UdpSocket,
-    
-    // Framework
-    default_ipv4: Ipv4Addr,
+    udp_listeners: Vec<UdpSocket>,
+    tcp_listeners: Vec<TcpListener>,
+    tls_listeners: Vec<TcpListener>,   // TLS wraps TCP
+    https_listeners: Vec<TcpListener>, // HTTP also starts as TCP
     dns_map: HashMap<String, Ipv4Addr>,
-    wildcard_enabled: bool,
-
-    // Metric Data (Add later) 
-
-    // Caching
-    cache: Arc<DnsCache>,
-
-    // Policy (Add later)
-
 }
 
-/// Implementation block for DnsServer
+/// Implementation of DnsServer
 impl DnsServer {
 
-    /// TODO: I need to do something better here.
-    pub fn new (config: Config) -> std::io::Result<Self> {
+    /// Initialize the different sockets based on the configuration
+    pub fn new (config: Config) -> Result<DnsServer> {
+        println!("Initializing DNS Server with Config.");
+        let Config {
+            mode,
+            listeners,
+            enable_tcp,
+            enable_https,
+            enable_tls,
+            std_listen_port,
+            https_listen_port,
+            tls_listen_port,
+        } = config; 
 
-        let socket_addr: SocketAddr = config.listen_addr;
-        println!(" Creating socket at {}:{} ", config.listen_addr.ip(), config.listen_addr.port());
-        let default_ipv4: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0); // Placeholder for default IP
-        let socket: UdpSocket = UdpSocket::bind(socket_addr)?;
-        socket.set_nonblocking(false)?;
+        let mut udp_vector = Vec::<UdpSocket>::new();
+        let mut tcp_vector = Vec::<TcpListener>::new();
+        let mut https_vector = Vec::new();
+        let mut tls_vector = Vec::new();
+
+        for listener in listeners {
+            let addr = SocketAddr::new(listener, std_listen_port);
+            let udp_socket = UdpSocket::bind(addr);
+            if udp_socket.is_ok() {
+                udp_vector.push(udp_socket.unwrap());
+            } else {
+                println!("The UDP socket {addr} : {std_listen_port} failed to bind.");
+            }
+        }
+
+        if enable_tcp {
+            for listener in listeners {
+                let tcp_addr = SocketAddr::new(listener, std_listen_port);
+                match TcpListener::bind(tcp_addr) {
+                    Ok(listener) => {
+                        println!("Binding {}");
+                        tcp_vector.push(listener);
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to bind TCP {}: {}", tcp_addr, e);
+                    },
+                }
+            }
+        }
+
+        // Create TLS Sockets: (DO LATER)
+
+        // Create HTTPS Sockets (DO LATER)
+
         Ok (DnsServer {
-            socket_addr: socket_addr,
-            socket,
-            default_ipv4,
+            udp_listeners: udp_vector,
+            tcp_listeners: tcp_vector,
+            https_listeners: https_vector,
+            tls_listeners: tls_vector,
             dns_map: HashMap::new(),
-            wildcard_enabled: true,
-            cache: Arc::new(DnsCache { cache: HashMap::new() })
             }
         )
     }
 
-    /// QNames in DNS are length prefixed string-labels
-    /// A QName string is terminated by [0]
-    /// Example: [3] w w w [6] g o o g l e [3] c o m [0]
     fn parse_qname (&self, pkt: &[u8], mut offset: usize) -> std::io::Result<(String, usize)> {
         let mut labels = Vec::new();
         loop { 
@@ -147,10 +166,6 @@ impl DnsServer {
         Ok((vec_queries, offset))
     }
 
-    fn resolve_hostnames () -> () {
-
-    }
-
     /// This function should only run when a packet has been recieved. Can use for testing?
     fn handle_request(&self, pkt: &[u8]) -> std::io::Result<Vec<u8>> {
         // Parse DNS header
@@ -184,9 +199,7 @@ impl DnsServer {
         Ok(vec![])
     }
 
-    /// Run the DNS server
-    pub fn run (&self) -> std::io::Result<()> {
-        println!("DNS Server is running on {}", self.socket_addr);
+    fn handle (&self) {
         let mut buffer: [u8; 512] = [0u8; 512]; // DNS packets are max 512 bytes (UDP)
 
         loop { 
@@ -217,5 +230,15 @@ impl DnsServer {
             };
 
         }
+    }
+
+    /// Run the DNS server
+    /// 
+    /// How can I accomodate for multiple protocols?
+    pub fn run (&self) -> std::io::Result<()> {
+        println!("DNS Server is running.");
+        
+
+        Ok(())
     }
 }

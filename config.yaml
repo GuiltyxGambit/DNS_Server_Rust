@@ -1,9 +1,9 @@
 # UDP is implicit
 server:
   #mode: Authoritative
-  disable_tcp: true
-  disable_https: true
-  disable_tls: true
+  enable_tcp: false
+  enable_https: false
+  enable_tls: false
   basic_port: 53
   tls_port: 853
   https_port: 443

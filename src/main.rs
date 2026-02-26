@@ -10,28 +10,24 @@ use config::Config;
 
 /// Entry
 fn main() {
-    let _args: Vec<String> = env::args().collect(); // Configure this later
-
     // TODO: If a configuration is provided by the user, use it. Otherwise use the default.
     let config_path = "config.yaml"; 
     let cnfg_result: Result<Config, Box<dyn Error>> = Config::load_via_path(config_path); 
     let cnfg: Config = match cnfg_result {
         Ok(c) => c,
         Err(e) => { 
-            eprintln!("!!! FAILED TO LOAD CONFIG. ERROR MESSAGE: {}", e);
+            eprintln!("Failed to load configuration file. {}", e);
             return;
         }
     };
 
-    println!("Here is the address: {}", cnfg.listen_addr.ip().to_string());
-
     // Create the DNS server using load configuration BEFORE running.
-    let dns_server_result: Result<DnsServer, std::io::Error> = DnsServer::new(cnfg);
-    let dns_server: DnsServer = match dns_server_result {
+    let dns_server_result: Result<DnsServer, Box<dyn Error>> = DnsServer::new(cnfg);
+    let dns_server = match dns_server_result { 
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create DNS server: {}", e);
-            return;
+            return; // Early break from main function here if dns_server_result returns an error
         }
     };
     
@@ -40,6 +36,6 @@ fn main() {
         eprintln!("Failed to start DNS server: {}", e); // If server fails to start, print error.
     }
     
-    println!("DNS Server has stopped.");
+    println!("DNS Server has stopped."); // This might not be nessesary
 
 }
