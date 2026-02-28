@@ -1,6 +1,8 @@
-use std::{any::Any, collections::HashMap, fmt::Result, net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket}, sync::Arc, time::Instant, vec};
-use trust_dns_server::proto::op::query;
+use std::{any::Any, collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, sync::Arc, time::Instant, vec};
+use tokio::net::{UdpSocket, TcpListener};
+use tokio::task;
 use crate::config::Config;
+use std::error::Error;
 
 type Result<T> = core::result::Result<T, Box<dyn Error>>;
 
@@ -33,8 +35,8 @@ struct DNSHeader {
 }
 
 pub struct DnsServer {
-    udp_listeners: Vec<UdpSocket>,
-    tcp_listeners: Vec<TcpListener>,
+    udp_listeners: Vec<tokio::net::UdpSocket>,
+    tcp_listeners: Vec<tokio::net::TcpListener>,
     tls_listeners: Vec<TcpListener>,   // TLS wraps TCP
     https_listeners: Vec<TcpListener>, // HTTP also starts as TCP
     dns_map: HashMap<String, Ipv4Addr>,
@@ -44,7 +46,7 @@ pub struct DnsServer {
 impl DnsServer {
 
     /// Initialize the different sockets based on the configuration
-    pub fn new (config: Config) -> Result<DnsServer> {
+    pub async fn new (config: Config) -> Result<DnsServer> {
         println!("Initializing DNS Server with Config.");
         let Config {
             mode,
@@ -57,35 +59,37 @@ impl DnsServer {
             tls_listen_port,
         } = config; 
 
-        let mut udp_vector = Vec::<UdpSocket>::new();
-        let mut tcp_vector = Vec::<TcpListener>::new();
+        let mut udp_vector = Vec::<tokio::net::UdpSocket>::new();
+        let mut tcp_vector = Vec::<tokio::net::TcpListener>::new();
         let mut https_vector = Vec::new();
         let mut tls_vector = Vec::new();
 
-        for listener in listeners {
-            let addr = SocketAddr::new(listener, std_listen_port);
-            let udp_socket = UdpSocket::bind(addr);
-            if udp_socket.is_ok() {
-                udp_vector.push(udp_socket.unwrap());
-            } else {
-                println!("The UDP socket {addr} : {std_listen_port} failed to bind.");
-            }
-        }
-
-        if enable_tcp {
             for listener in listeners {
-                let tcp_addr = SocketAddr::new(listener, std_listen_port);
-                match TcpListener::bind(tcp_addr) {
-                    Ok(listener) => {
-                        println!("Binding {}");
-                        tcp_vector.push(listener);
-                    },
+                let addr = SocketAddr::new(listener, std_listen_port);
+                let udp_socket = UdpSocket::bind(addr);
+                match udp_socket.await {
+                    Ok(socket) => {
+                        udp_vector.push(socket);
+                    }
                     Err(e) => {
-                        eprintln!("Failed to bind TCP {}: {}", tcp_addr, e);
-                    },
+                        eprintln!("Failed to bind std UDP {}: {}", addr, e);
+                    }
                 }
             }
-        }
+        
+            if enable_tcp {
+                for listener in listeners {
+                    let tcp_addr = SocketAddr::new(listener, std_listen_port);
+                    match TcpListener::bind(tcp_addr).await {
+                        Ok(listener) => {
+                            tcp_vector.push(listener);
+                        },
+                        Err(e) => {
+                            eprintln!("Failed to bind TCP {}: {}", tcp_addr, e);
+                        },
+                    }
+                }
+            }
 
         // Create TLS Sockets: (DO LATER)
 
@@ -96,7 +100,7 @@ impl DnsServer {
             tcp_listeners: tcp_vector,
             https_listeners: https_vector,
             tls_listeners: tls_vector,
-            dns_map: HashMap::new(),
+            dns_map: HashMap::new(), // Replace later.
             }
         )
     }
@@ -199,46 +203,20 @@ impl DnsServer {
         Ok(vec![])
     }
 
-    fn handle (&self) {
-        let mut buffer: [u8; 512] = [0u8; 512]; // DNS packets are max 512 bytes (UDP)
-
-        loop { 
-            let (size, src_addr) = match self.socket.recv_from(&mut buffer) {
-                Ok((size, src_addr)) => (size, src_addr),
-                Err(e) => {
-                    eprintln!("Failed to receive data: {}", e);
-                    continue;
-                }
-            };
-            // Add a packet data validator here??
-            println!("Packet size: {}", size);
-
-            let request_data= &buffer[..size];
-
-            // Handle the DNS request
-            let response = match self.handle_request(request_data) {
-                Ok(resp) => resp,
-                Err(e) => {
-                    eprintln!("Failed to handle request: {}", e);
-                    continue;
-                }
-            };
-
-            // Send response back to the client
-            if let Err(e) = self.socket.send_to(&response, src_addr) {
-                eprintln!("send_to failed: {}", e);
-            };
-
-        }
-    }
-
     /// Run the DNS server
     /// 
     /// How can I accomodate for multiple protocols?
     pub fn run (&self) -> std::io::Result<()> {
         println!("DNS Server is running.");
         
+        //
+         
 
+        // 
+
+        // 
+
+        
         Ok(())
     }
 }
