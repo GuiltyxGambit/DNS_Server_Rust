@@ -7,8 +7,8 @@ use std::env;
 use std::error::Error;
 use dns_server::DnsServer;
 use config::Config;
+use tokio::runtime::{Runtime};
 
-/// Entry
 fn main() {
     // TODO: If a configuration is provided by the user, use it. Otherwise use the default.
     let config_path = "config.yaml"; 
@@ -21,9 +21,13 @@ fn main() {
         }
     };
 
-    // Create the DNS server using load configuration BEFORE running.
-    let dns_server_result: Result<DnsServer, Box<dyn Error>> = DnsServer::new(cnfg);
-    let dns_server = match dns_server_result { 
+    // let dns_server_result = DnsServer::new(cnfg);
+
+    // Current stage of build needs a DNS Server with a basic port open. `new_test()` gives an instance of struct 
+    // that has a simple predetermined valid UDP socket. 
+    let dns_server_result = DnsServer::new_test(cnfg);
+
+    let dns_server: DnsServer = match dns_server_result { 
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create DNS server: {}", e);
@@ -31,9 +35,18 @@ fn main() {
         }
     };
     
-    // Start the DNS server
-    if let Err(e) = dns_server.run() {
-        eprintln!("Failed to start DNS server: {}", e); // If server fails to start, print error.
+    // Create a default multi-threaded runtime. 
+    // This Tokio runtime has the same number of threads as CPU cores.
+    // 
+    let runtime = Runtime::new().unwrap();
+
+    
+    // A future is given to runtime.block_on(...) with the expectation the argument spawning tasks 
+    let future = dns_server.run();
+
+    // Start the DNS server using Tokio. OS thread is blocked here until runtime conditions conclude.
+    if let Err(e) = runtime.block_on(future) {
+        eprintln!("Failed to start DNS server: {}", e);
     }
     
     println!("DNS Server has stopped."); // This might not be nessesary

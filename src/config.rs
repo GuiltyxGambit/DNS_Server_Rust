@@ -2,6 +2,7 @@ use std::{array, net::{IpAddr, Ipv4Addr, SocketAddr}, path::PathBuf, str::FromSt
 use core::str;
 use serde::Deserialize;
 use std::error::Error;
+use tokio::net::ToSocketAddrs;
 
 type Result<T> = core::result::Result<T, Box<dyn Error>>;
 
@@ -49,8 +50,8 @@ pub struct StaticRecord {
     pub A: Option<Vec<String>>,
 }
 */
-#[derive(Deserialize)]
-enum Mode {
+#[derive(Deserialize, Copy, Clone)]
+pub enum Mode {
     Recursive,
     Authoritative,
     Cache,
@@ -59,6 +60,7 @@ enum Mode {
 
 /// DNS Config should have a list of valid internet socket addresses (either ipv4 or ipv6).
 /// 
+#[derive(Clone)]
 pub struct Config {
     pub mode: Mode,
     pub listeners: Vec<IpAddr>,
@@ -92,18 +94,9 @@ impl Config {
         } = yaml;
 
         // Custom or default ports
-        let std_port = match server.basic_port {
-            Some(thing) => thing,
-            _ => 53
-        };
-        let tls_port = match server.tls_port {
-            Some(thing) => thing,
-            _ => 853
-        };
-        let http_port = match server.https_port {
-            Some(thing) => thing,
-            _ => 443
-        };
+        let std_port = server.basic_port.unwrap_or(53);
+        let tls_port = server.tls_port.unwrap_or(853);
+        let http_port = server.https_port.unwrap_or(443);
 
         let mut addr_vec = Vec::new();
         for ip in server.ip_addrs {

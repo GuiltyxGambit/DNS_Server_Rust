@@ -1,10 +1,22 @@
-use std::{any::Any, collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, sync::Arc, time::Instant, vec};
-use tokio::net::{UdpSocket, TcpListener};
-use tokio::task;
-use crate::config::Config;
+// External Crates
+use std::collections::HashMap;
 use std::error::Error;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{UdpSocket as StdUdpSocket, TcpListener as StdTcpListener};
+use std::str::FromStr;
+use std::time::Instant;
+use tokio::net::{TcpListener, UdpSocket};
+use tokio::task::JoinSet;
+use tokio_util::bytes::{self, Buf, Bytes, BytesMut};
+use tokio_util::udp::UdpFramed;
+use tokio_util::codec::BytesCodec;
+use futures::StreamExt;
 
-type Result<T> = core::result::Result<T, Box<dyn Error>>;
+// Internal Crates
+use crate::config::Config;
+
+// Temporary Error type
+type Result<T> = core::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 /// Add later
 pub struct CacheRecord {
@@ -25,6 +37,15 @@ struct DNSQuery {
 }
 
 #[derive(Debug)]
+pub struct ResourceRecord {
+    pub name:    String,
+    pub rtype:   u16,
+    pub rclass:  u16,
+    pub ttl:     u32,
+    pub rdata:   Vec<u8>, // For A records: 4 bytes of IPv4
+}
+
+#[derive(Debug)]
 struct DNSHeader {
     id: u16,
     flags: u16,
@@ -35,8 +56,8 @@ struct DNSHeader {
 }
 
 pub struct DnsServer {
-    udp_listeners: Vec<tokio::net::UdpSocket>,
-    tcp_listeners: Vec<tokio::net::TcpListener>,
+    udp_listeners: Vec<StdUdpSocket>,
+    tcp_listeners: Vec<StdTcpListener>,
     tls_listeners: Vec<TcpListener>,   // TLS wraps TCP
     https_listeners: Vec<TcpListener>, // HTTP also starts as TCP
     dns_map: HashMap<String, Ipv4Addr>,
@@ -45,8 +66,7 @@ pub struct DnsServer {
 /// Implementation of DnsServer
 impl DnsServer {
 
-    /// Initialize the different sockets based on the configuration
-    pub async fn new (config: Config) -> Result<DnsServer> {
+    pub fn new (config: Config) -> Result<DnsServer> {
         println!("Initializing DNS Server with Config.");
         let Config {
             mode,
@@ -59,15 +79,19 @@ impl DnsServer {
             tls_listen_port,
         } = config; 
 
-        let mut udp_vector = Vec::<tokio::net::UdpSocket>::new();
-        let mut tcp_vector = Vec::<tokio::net::TcpListener>::new();
+        let mut udp_vector = Vec::<StdUdpSocket>::new();
+        let mut tcp_vector = Vec::<StdTcpListener>::new();
         let mut https_vector = Vec::new();
         let mut tls_vector = Vec::new();
 
-            for listener in listeners {
-                let addr = SocketAddr::new(listener, std_listen_port);
-                let udp_socket = UdpSocket::bind(addr);
-                match udp_socket.await {
+            // Need to borrow `listeners` in order to reuse it in subsequent checks
+            // Iterating over reference to vector `listeners`.
+            for listener in &listeners { // Borrow listeners
+
+                let addr = SocketAddr::new(*listener, std_listen_port);
+
+                let udp_socket = StdUdpSocket::bind(addr);
+                match udp_socket {
                     Ok(socket) => {
                         udp_vector.push(socket);
                     }
@@ -75,26 +99,31 @@ impl DnsServer {
                         eprintln!("Failed to bind std UDP {}: {}", addr, e);
                     }
                 }
-            }
-        
-            if enable_tcp {
-                for listener in listeners {
-                    let tcp_addr = SocketAddr::new(listener, std_listen_port);
-                    match TcpListener::bind(tcp_addr).await {
+
+                if enable_tcp {
+                    match StdTcpListener::bind(addr) {
                         Ok(listener) => {
                             tcp_vector.push(listener);
-                        },
+                        }
                         Err(e) => {
-                            eprintln!("Failed to bind TCP {}: {}", tcp_addr, e);
-                        },
+                            eprintln!("Failed to bind TCP {}: {}", addr, e);
+                        }
                     }
                 }
+
+                // TODO: implement TLS
+                if enable_tls {
+                    let tls_socket = SocketAddr::new(*listener, tls_listen_port);
+                }
+
+                // TODO: implement HTTPS
+                if enable_https {
+                    let https_socket = SocketAddr::new(*listener, https_listen_port);
+                }
+
             }
 
-        // Create TLS Sockets: (DO LATER)
-
-        // Create HTTPS Sockets (DO LATER)
-
+        // https_listeners and tls_listeners currently have empty vectors
         Ok (DnsServer {
             udp_listeners: udp_vector,
             tcp_listeners: tcp_vector,
@@ -105,118 +134,322 @@ impl DnsServer {
         )
     }
 
-    fn parse_qname (&self, pkt: &[u8], mut offset: usize) -> std::io::Result<(String, usize)> {
-        let mut labels = Vec::new();
-        loop { 
-            if pkt.len() < offset {
-                return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData, // Not the right error, but good enough
-                "Unexpected end of buffer while parsing QNAME",
-            ));
-            }
-            let len: usize = pkt[offset] as usize; // Read length prefix
-            offset += 1;
-            if len == 0 { 
-                // Break loop of reading labels iff the terminating character is read
-                break; 
-            }
-            else if offset + len > pkt.len() {
-                // Return a data error if the length of the label to be read exceeds the buffer
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "Label length exceeds buffer",
-                ));
-            }
-            else {
-                // Read the label based on the length prefix
-                let label = std::str::from_utf8(&pkt[offset..offset + len])
-                .map_err(|_| std::io::Error::new( // What is the point of mapping an error?
-                    std::io::ErrorKind::InvalidData,
-                    "Invalid UTF-8 in QNAME",
-                ))?;
-                // Put the label into the string vector
-                labels.push(label.to_string());
-                offset += len; // Increment offset by length of the string.
-            }
-        }
-        Ok((labels.join("."), offset)) // Eg www.google.com
-    }
-
-    fn parse_dns_query (&self, pkt: &[u8], offset: usize) -> std::io::Result<(DNSQuery, usize)> {
-        // First get variable length 
-        let (name, offset) = self.parse_qname(pkt, offset)?;
-        // Check if there is even a question
-        if offset + 4 > pkt.len() { 
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "DNS QUESTION AND/OR TYPE & CLASS TRUNCATED FROM THE PACKET",
-            ));
-        }
-        let qtype = u16::from_be_bytes([pkt[offset], pkt[offset + 1]]);
-        let qclass = u16::from_be_bytes([pkt[offset + 2], pkt[offset + 3]]);
-        Ok(( // Return tuple of DNSQuestion and new offset value
-            DNSQuery {name, qtype, qclass}, 
-            offset + 4
-        ))
-    } 
-
-    fn parse_dns_queries (&self, pkt: &[u8], offset: usize, num: usize) -> std::io::Result<(Vec<DNSQuery>, usize)> {
-        // Need to know number of queries to determine how many times to loop.
-        let mut vec_queries = Vec::new();
-        for i in 0..num {
-            let (query,_) = self.parse_dns_query(pkt, offset)?;
-            vec_queries.push(query);
-        }
-        Ok((vec_queries, offset))
-    }
-
-    /// This function should only run when a packet has been recieved. Can use for testing?
-    fn handle_request(&self, pkt: &[u8]) -> std::io::Result<Vec<u8>> {
-        // Parse DNS header
-        let len = pkt.len();
-        if len < 12 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Packet too short"));
-        }
-
-        let mut offset: usize = 0;
-        let header = DNSHeader {
-            id: u16::from_be_bytes([pkt[0], pkt[1]]),
-            flags: u16::from_be_bytes([pkt[2], pkt[3]]),
-            qdcount: u16::from_be_bytes([pkt[4], pkt[5]]),
-            ancount: u16::from_be_bytes([pkt[6], pkt[7]]),
-            nscount: u16::from_be_bytes([pkt[8],pkt[9]]),
-            arcount: u16::from_be_bytes([pkt[10],pkt[11]]),
-        };
-
-        offset = 12; // Offset after DNS header should always be 12 bytes
-
-        // 2. Parse DNS questions
-        let query_vector = self.parse_dns_queries(pkt, offset,header.qdcount as usize);
-
-        // 3. Extract hostname
-
-        // 4. Resolve hostname to IPv4
-
-        // 5. Build DNS response packet
-
-        // Placeholder:
-        Ok(vec![])
-    }
-
-    /// Run the DNS server
-    /// 
-    /// How can I accomodate for multiple protocols?
-    pub fn run (&self) -> std::io::Result<()> {
-        println!("DNS Server is running.");
+    /// This function is designed to give back a simple instance of a DNS server for testing. No complications of invalid sockets. 
+    pub fn new_test(cfg: Config) -> Result<DnsServer> {
         
-        //
-         
+        // Find a valid UDP socket for system and add it to the UDP vector. 
+        let ip = IpAddr::from_str("0.0.0.0")?;
+        let port = 0505;
+        let addr = SocketAddr::new(ip, port);
+        let socket = StdUdpSocket::bind(addr)?;
+
+        let mut udp_listeners = vec![socket];
+
+        Ok(DnsServer { 
+            udp_listeners, 
+            tcp_listeners: Vec::<StdTcpListener>::new(), 
+            tls_listeners: Vec::new(), 
+            https_listeners: Vec::new(), 
+            dns_map: HashMap::new() 
+        })
+    }
+
+    
+    pub async fn udp_listener<T: UdpHandler>(socket: UdpSocket, udp_handler: T) -> std::io::Result<()> { // Using `std::io::Result<()>` because dynamic errors cannot be sent between threads safely. 
+        println!("UDP Socket listening");
+
+        // `framed` is a UdpFramed a stream interface defined for a BytesCodec.
+        let mut framed: UdpFramed<BytesCodec> = UdpFramed::new(socket, BytesCodec::new());
 
         // 
+        while let Some(result) = framed.next().await {
+            let (bytes, peer_addr) = result?;
+            udp_handler.handle(bytes.freeze()).await?; // freeze() = BytesMut -> Bytes (owned, Arc-backed)
+        }
 
-        // 
-
-        
         Ok(())
     }
+
+    fn parse_qname(mut slice: &[u8]) -> Result<(String, &[u8])> {
+        let mut labels: Vec<String> = Vec::new();
+
+        if slice.is_empty() {
+            return Err("Unexpected end of QNAME".into());
+        }
+
+        // Fix later
+        while (slice[0] != 0) {
+            let len = slice[0] as usize;
+            let label = std::str::from_utf8(&slice[..len])?;
+            labels.push(label.to_owned());
+            slice = &slice[len..];
+        }
+        Ok((labels.join("."), slice))
+    }
+    
+    pub fn parse_questions(num_questions: u16, mut slice: &[u8]) -> Result<(Vec<DNSQuery>, &[u8])> {
+        let mut questions = Vec::with_capacity(num_questions as usize);
+        for i in 0..num_questions {
+            let (query, temp_slice) = Self::parse_question(slice)?;
+            questions.push(query);
+            slice = temp_slice;
+        }
+        Ok((questions, slice))
+    }
+
+    pub fn parse_question(slice: &[u8]) -> Result<(DNSQuery, &[u8])> {
+        // Read specified domain name.
+        let (name, rest) = Self::parse_qname(slice)?;
+
+        if rest.len() < 4 {
+            return Err("Not enough bytes for QTYPE/QCLASS".into());
+        }
+
+        Ok((
+            DNSQuery {
+                name,
+                qtype:  u16::from_be_bytes([rest[0], rest[1]]),
+                qclass: u16::from_be_bytes([rest[2], rest[3]]),
+            },
+            &rest[4..],
+        ))
+    }
+
+    pub fn parse_header(bytes: &[u8]) -> Result<(DNSHeader, &[u8])> {
+        if bytes.len() < 12 {
+            return Err("Packet too short for DNS header".into());
+        }
+        
+        // Directly index:
+        let header = DNSHeader {
+            id: u16::from_be_bytes([bytes[0],  bytes[1]]),
+            flags: u16::from_be_bytes([bytes[2],  bytes[3]]),
+            qdcount: u16::from_be_bytes([bytes[4],  bytes[5]]),
+            ancount:  u16::from_be_bytes([bytes[6],  bytes[7]]),
+            nscount: u16::from_be_bytes([bytes[8],  bytes[9]]),
+            arcount:  u16::from_be_bytes([bytes[10],  bytes[11]]),
+        };
+
+        let (left, right) = bytes.split_at(12);
+
+        Ok((header, right))
+    }
+
+    pub fn resolve_questions(query_vector: Vec<DNSQuery>) -> Result<Vec<ResourceRecord>> {
+        let mut answers = Vec::new();
+        
+        /**
+        for question in query_vector {
+            // Resolve single domain-name query
+            if let Some(ip) = self.dns_map.get(&question.name) {
+                answers.push(ResourceRecord {
+                    name:   question.name.clone(),
+                    rtype:  1,              // A
+                    rclass: 1,              // IN
+                    ttl:    300,
+                    rdata:  ip.octets().to_vec(),
+                });
+            }
+        }
+        */
+
+        Ok(answers)
+    }
+
+    // Build responce should be the same regardless of protocol. 
+    pub fn build_response(header: &DNSHeader, vector: &Vec<ResourceRecord>) -> Result<Bytes> {
+
+        todo!()
+    }
+
+    /// This function takes ownership of `self`, (instance of DNS server).
+    pub async fn run (mut self) -> std::io::Result<()> { // Returns a `Future`, 
+        println!("DNS Server is running.");
+
+        let mut tasks = JoinSet::new(); 
+
+        for std_socket in self.udp_listeners.drain(..) { // drain() moves each socket out of the Vec. 
+            std_socket.set_nonblocking(true)?; // Async IO requires non-blocking sockets so that polling a socket never stalls a thread
+            let tokio_socket = UdpSocket::from_std(std_socket)?;
+
+            // Using a joinset with a handle udp should be adequate.
+            tasks.spawn(async move {
+                Self::udp_listener(tokio_socket, 
+                    // udp_handler:
+                    |bytes: Bytes| async move {                        
+                        // Parse DNS Header (12 bytes):
+
+                        // Note: Using `self` in this creates FnOnce issues. Need to investigate solution later.
+                        let (header, message) = Self::parse_header(&bytes)
+                            .map_err(std::io::Error::other)?;
+
+                        if (header.flags & (1 << 15 )) != 0 { // DNS message is a response
+                            return Ok(None);
+                        }
+                            
+                        let (query_vector, remaining_slice) = Self::parse_questions(header.qdcount, message)
+                            .map_err(std::io::Error::other)?;
+
+                        let answers = Self::resolve_questions(query_vector)
+                            .map_err(std::io::Error::other)?;
+
+                        let response_bytes = Self::build_response(&header, &answers)
+                            .map_err(std::io::Error::other)?;
+
+                        let response_bytes = Bytes::new();
+
+                        Ok(Some(response_bytes))
+                    }
+                ).await // Ownership of socket is given to the loop.
+            });
+        }
+
+        let signal = self.block_until_done(tasks).await;
+        Ok(())
+    }
+
+    pub async fn block_until_done(&mut self,  mut tasks: JoinSet<std::io::Result<()>>) -> std::io::Result<()> {
+        // Loop exits if `tasks.join_next().await` returns None. Otherwise, `Some` should contain a Result.
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(())) => {
+                    eprintln!("Warning: a listener task exited unexpectedly.");
+                }
+                Ok(Err(e)) => {
+                    // A listener loop returned an error, thus shut everything.
+                    eprintln!("Listener task failed: {}", e);
+                    tasks.abort_all();
+                    return Err(e);
+                }
+                Err(join_err) => {
+                    // A task paniced or was cancelled.
+                    eprintln!("Task join error: {}", join_err);
+                    tasks.abort_all();
+                    return Err(std::io::Error::other(join_err));
+                }
+            }
+        }
+        Ok(())
+    }
+
+
 }
+
+struct UDPHandler {
+    socket: UdpSocket
+}
+
+impl UDPHandler {
+    pub fn new() -> () {
+        todo!()
+    }
+
+    pub fn parse_header(bytes: &[u8]) -> Result<(DNSHeader, &[u8])> {
+        if bytes.len() < 12 {
+            return Err("Packet too short for DNS header".into());
+        }
+        
+        // Directly index:
+        let header = DNSHeader {
+            id: u16::from_be_bytes([bytes[0],  bytes[1]]),
+            flags: u16::from_be_bytes([bytes[2],  bytes[3]]),
+            qdcount: u16::from_be_bytes([bytes[4],  bytes[5]]),
+            ancount:  u16::from_be_bytes([bytes[6],  bytes[7]]),
+            nscount: u16::from_be_bytes([bytes[8],  bytes[9]]),
+            arcount:  u16::from_be_bytes([bytes[10],  bytes[11]]),
+        };
+
+        let (left, right) = bytes.split_at(12);
+
+        Ok((header, right))
+    }
+
+    pub fn parse_qname(mut slice: &[u8]) -> Result<(String, &[u8])> {
+                let mut labels: Vec<String> = Vec::new();
+
+        if slice.is_empty() {
+            return Err("Unexpected end of QNAME".into());
+        }
+
+        // Fix later
+        while (slice[0] != 0) {
+            let len = slice[0] as usize;
+            let label = std::str::from_utf8(&slice[..len])?;
+            labels.push(label.to_owned());
+            slice = &slice[len..];
+        }
+        Ok((labels.join("."), slice))
+    }
+
+    pub fn parse_question(slice: &[u8]) -> Result<(DNSQuery, &[u8])> {
+        // Read specified domain name.
+        let (name, rest) = Self::parse_qname(slice)?;
+
+        if rest.len() < 4 {
+            return Err("Not enough bytes for QTYPE/QCLASS".into());
+        }
+
+        Ok((
+            DNSQuery {
+                name,
+                qtype:  u16::from_be_bytes([rest[0], rest[1]]),
+                qclass: u16::from_be_bytes([rest[2], rest[3]]),
+            },
+            &rest[4..],
+        ))
+    }
+
+    pub fn parse_questions(num_questions: u16, mut slice: &[u8]) -> Result<(Vec<DNSQuery>, &[u8])> {
+        let mut questions = Vec::with_capacity(num_questions as usize);
+        for i in 0..num_questions {
+            let (query, temp_slice) = Self::parse_question(slice)?;
+            questions.push(query);
+            slice = temp_slice;
+        }
+        Ok((questions, slice))
+    }
+
+    pub fn resolve() {
+
+    }
+
+    pub fn build_response() -> () {
+
+    }
+}
+
+impl UdpHandler for UDPHandler {
+    async fn handle(&self, input: Bytes) -> std::io::Result<Option<Bytes>> {
+
+        let bytes = input; // really corny temporary fix
+
+        let (header, message) = Self::parse_header(&bytes)
+            .map_err(std::io::Error::other)?;
+
+        // Ignore responses
+        if (header.flags & (1 << 15)) != 0 {
+            return Ok(None);
+        }
+
+        let (query_vector, remaining_slice) = Self::parse_questions(header.qdcount, message)
+            .map_err(std::io::Error::other)?;
+
+        todo!()
+    }
+}
+
+trait UdpHandler {
+    async fn handle(&self, input: Bytes) -> std::io::Result<Option<Bytes>>;
+}
+
+impl<F, Fut> UdpHandler for F
+where
+    F: Fn(Bytes) -> Fut,
+    Fut: Future<Output = std::io::Result<Option<Bytes>>>,
+{
+    async fn handle(&self, input: Bytes) -> std::io::Result<Option<Bytes>> {
+        self(input).await
+    }
+}
+
+// A protocol handler consists of a `request handler` and a `response handler`?
